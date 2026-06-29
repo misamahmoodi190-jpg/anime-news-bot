@@ -1,0 +1,50 @@
+name: 🤖 ارسال اخبار انیمه و مانهوا
+
+on:
+  schedule:
+    # هر ۱ ساعت اجرا شود (UTC)
+    - cron: "0 * * * *"
+  
+  # امکان اجرای دستی برای تست
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  post-news:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ۱. دریافت کد
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ۲. نصب پایتون
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # ۳. نصب وابستگی‌ها
+      - name: 📦 Install Dependencies
+        run: |
+          pip install -r requirements.txt
+
+      # ۴. اجرای اسکریپت
+      - name: 🚀 Run News Bot
+        env:
+          BALE_BOT_TOKEN: ${{ secrets.BALE_BOT_TOKEN }}
+          BALE_CHANNEL_ID: ${{ secrets.BALE_CHANNEL_ID }}
+        run: python news_bot.py
+
+      # ۵. ذخیره تغییرات (فایل posted_news.json)
+      - name: 💾 Commit Updated Data
+        run: |
+          git config --local user.email "bot@github.com"
+          git config --local user.name "Anime News Bot"
+          git add posted_news.json
+          git diff --staged --quiet || git commit -m "📊 بروزرسانی لیست اخبار ارسال شده [skip ci]"
+          git push
