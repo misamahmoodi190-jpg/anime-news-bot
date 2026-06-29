@@ -16,23 +16,32 @@ MAX_HISTORY = 500
 
 CHANNEL_SIGNATURE = "[◦•●◉✿   چنل اتاکو °•|•° otako chanel ✿◉●•◦](https://ble.ir/join/HtzJvEic6p)"
 
+# منابع RSS تخصصی فقط برای انیمه، مانگا و مانهوا
 RSS_FEEDS = {
-    "Anime News Network": {
-        "url": "https://www.animenewsnetwork.com/news/rss.xml",
+    "Crunchyroll Anime": {
+        "url": "https://crunchyroll.com/rss/anime",
         "emoji": "🎌",
         "category": "anime"
     },
-    "ANN Manga News": {
+    "Anime News Network - Manga": {
         "url": "https://www.animenewsnetwork.com/news/manga/rss.xml",
         "emoji": "📚",
         "category": "manga"
     },
-    "MyAnimeList News": {
-        "url": "https://myanimelist.net/rss/news.xml",
-        "emoji": "⭐",
-        "category": "anime"
+    "Manga Report": {
+        "url": "https://www.manga-report.com/feed/",
+        "emoji": "📚",
+        "category": "manga"
     },
 }
+
+# کلمات کلیدی برای فیلتر کردن اخبار نامرتبط
+FILTER_KEYWORDS = [
+    "game", "games", "gaming", "video game",
+    "live action", "live-action", "movie", "film",
+    "drama", "tv series", "netflix", "hulu",
+    "playstation", "xbox", "nintendo", "steam"
+]
 
 
 def load_posted_ids():
@@ -55,6 +64,30 @@ def save_posted_ids(posted_set):
 def make_id(url, title=""):
     raw = url or title
     return hashlib.md5(raw.encode("utf-8")).hexdigest()
+
+
+def is_relevant(title, summary=""):
+    """بررسی اینکه آیا خبر مربوط به انیمه/مانگا/مانهوا است"""
+    text = (title + " " + summary).lower()
+    
+    # اگر کلمات نامرتبط دارد، رد کن
+    for keyword in FILTER_KEYWORDS:
+        if keyword in text:
+            return False
+    
+    # اگر کلمات مرتبط دارد، قبول کن
+    relevant_keywords = [
+        "anime", "manga", "manhwa", "manhua",
+        "otaku", "japan animation", "japanese",
+        "chapter", "volume", "season", "episode",
+        "studio", "mangaka", "artist", "author"
+    ]
+    
+    for keyword in relevant_keywords:
+        if keyword in text:
+            return True
+    
+    return True  # اگر هیچ کلمه‌ای نبود، قبول کن
 
 
 def translate_to_persian(text):
@@ -93,14 +126,21 @@ def fetch_rss_news():
         try:
             print("دریافت از: " + source_name + "...")
             feed = feedparser.parse(config["url"])
-            for entry in feed.entries[:15]:
+            for entry in feed.entries[:20]:
                 title = entry.get("title", "").strip()
                 link = entry.get("link", "").strip()
                 summary_raw = entry.get("summary", entry.get("description", ""))
                 summary = BeautifulSoup(summary_raw, "html.parser").get_text()
                 summary = summary.strip()[:300]
+                
+                # فیلتر کردن اخبار نامرتبط
+                if not is_relevant(title, summary):
+                    print("رد شد (نامرتبط): " + title[:50])
+                    continue
+                
                 title_fa = translate_to_persian(title)
                 summary_fa = translate_to_persian(summary) if summary else ""
+                
                 image_url = ""
                 if hasattr(entry, "media_content"):
                     for media in entry.media_content:
@@ -111,6 +151,7 @@ def fetch_rss_news():
                     for thumb in entry.media_thumbnail:
                         image_url = thumb.get("url", "")
                         break
+                
                 if title:
                     all_news.append({
                         "id": make_id(link, title),
