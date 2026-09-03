@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import html
 import hashlib
 import requests
 import feedparser
@@ -9,88 +10,113 @@ from bs4 import BeautifulSoup
 
 BOT_TOKEN = os.environ.get("BALE_BOT_TOKEN", "")
 CHANNEL_ID = os.environ.get("BALE_CHANNEL_ID", "")
-BASE_URL = "https://tapi.bale.ai/bot" + BOT_TOKEN + "/"
+BASE_URL = f"https://tapi.bale.ai/bot{BOT_TOKEN}/"
 DATA_FILE = "posted_news.json"
 MAX_POSTS_PER_RUN = 3
 MAX_HISTORY = 500
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0.0.0 Safari/537.36"
+)
 
 CHANNEL_SIGNATURE = "[◦•●◉✿   چنل اتاکو °•|•° otako chanel ✿◉●•◦](https://ble.ir/join/HtzJvEic6p)"
 
-# منابع RSS تخصصی فقط برای انیمه، مانگا و مانهوا
+# منابع RSS فعال و معتبر برای انیمه، مانگا و مانهوا
 RSS_FEEDS = {
-    "Crunchyroll Anime": {
-        "url": "https://crunchyroll.com/rss/anime",
+    "Anime News Network": {
+        "url": "https://www.animenewsnetwork.com/news/rss.xml",
         "emoji": "🎌",
-        "category": "anime"
+        "category": "anime",
     },
-    "Anime News Network - Manga": {
-        "url": "https://www.animenewsnetwork.com/news/manga/rss.xml",
+    "MyAnimeList News": {
+        "url": "https://myanimelist.net/rss/news.xml",
         "emoji": "📚",
-        "category": "manga"
+        "category": "anime",
     },
-    "Manga Report": {
-        "url": "https://www.manga-report.com/feed/",
-        "emoji": "📚",
-        "category": "manga"
+    "Anime Corner": {
+        "url": "https://animecorner.me/feed/",
+        "emoji": "✨",
+        "category": "anime",
+    },
+    "Otaku USA Magazine": {
+        "url": "https://otakuusamagazine.com/feed/",
+        "emoji": "📖",
+        "category": "manga",
     },
 }
 
-# کلمات کلیدی برای فیلتر کردن اخبار نامرتبط
+# کلمات کلیدی برای فیلتر کردن اخبار نامرتبط (مانند گیمینگ و لایو اکشن‌های نامربوط)
 FILTER_KEYWORDS = [
-    "game", "games", "gaming", "video game",
-    "live action", "live-action", "movie", "film",
-    "drama", "tv series", "netflix", "hulu",
-    "playstation", "xbox", "nintendo", "steam"
+    "video game", "gameplay", "playstation", "ps4", "ps5",
+    "xbox", "nintendo switch", "steam deck", "live-action film",
+    "k-drama", "j-drama"
+]
+
+RELEVANT_KEYWORDS = [
+    "anime", "manga", "manhwa", "manhua",
+    "otaku", "japan animation", "japanese",
+    "chapter", "volume", "season", "episode",
+    "studio", "mangaka", "artist", "author",
+    "voice actor", "seiyuu", "trailer", "visual",
+    "teaser", "premiere", "broadcast", "adaptation"
 ]
 
 
 def load_posted_ids():
+    """بارگذاری شناسه‌های اخبار ارسال شده قبلی با حفظ ترتیب زمانی"""
     try:
         if os.path.exists(DATA_FILE):
             with open(DATA_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                return set(data) if isinstance(data, list) else set()
+                if isinstance(data, list):
+                    return data
     except Exception as e:
-        print("خطا در خواندن فایل: " + str(e))
-    return set()
+        print(f"خطا در خواندن فایل تاریخچه: {e}")
+    return []
 
 
-def save_posted_ids(posted_set):
-    posted_list = list(posted_set)[-MAX_HISTORY:]
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(posted_list, f, ensure_ascii=False, indent=2)
+def save_posted_ids(posted_list):
+    """ذخیره شناسه‌های اخبار با محدود کردن به سقف MAX_HISTORY و حفظ ترتیب"""
+    try:
+        # حذف تکراری‌ها با حفظ ترتیب
+        seen = set()
+        unique_list = []
+        for item_id in posted_list:
+            if item_id not in seen:
+                seen.add(item_id)
+                unique_list.append(item_id)
+
+        trimmed_list = unique_list[-MAX_HISTORY:]
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(trimmed_list, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"خطا در ذخیره فایل تاریخچه: {e}")
 
 
 def make_id(url, title=""):
+    """تولید هش یکتا بر اساس لینک یا عنوان"""
     raw = url or title
     return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
 
 def is_relevant(title, summary=""):
-    """بررسی اینکه آیا خبر مربوط به انیمه/مانگا/مانهوا است"""
+    """بررسی هوشمند مرتبط بودن خبر با انیمه/مانگا/مانهوا"""
     text = (title + " " + summary).lower()
-    
-    # اگر کلمات نامرتبط دارد، رد کن
+
+    # بررسی کلمات نامرتبط
     for keyword in FILTER_KEYWORDS:
         if keyword in text:
+            # اگر همزمان کلمات کاملاً مرتبط انیمه‌ای دارد، تایید کن
+            if any(rel in text for rel in ["anime", "manga", "manhwa", "adaptation"]):
+                return True
             return False
-    
-    # اگر کلمات مرتبط دارد، قبول کن
-    relevant_keywords = [
-        "anime", "manga", "manhwa", "manhua",
-        "otaku", "japan animation", "japanese",
-        "chapter", "volume", "season", "episode",
-        "studio", "mangaka", "artist", "author"
-    ]
-    
-    for keyword in relevant_keywords:
-        if keyword in text:
-            return True
-    
-    return True  # اگر هیچ کلمه‌ای نبود، قبول کن
+
+    return True
 
 
 def translate_to_persian(text):
+    """ترجمه متن به فارسی با پشتیبانی از کش و تمیزکاری موجودیت‌های HTML"""
     if not text or len(text.strip()) < 3:
         return text
     try:
@@ -103,10 +129,11 @@ def translate_to_persian(text):
             data = res.json()
             translated = data.get("responseData", {}).get("translatedText", "")
             if translated and translated.lower() != text.lower():
-                return translated
+                # پاکسازی موجودیت‌های HTML از خروجی ترجمه
+                return html.unescape(translated).strip()
         return text
     except Exception as e:
-        print("خطا در ترجمه: " + str(e))
+        print(f"خطا در ترجمه: {e}")
         return text
 
 
@@ -121,54 +148,67 @@ def get_hashtag(category):
 
 
 def fetch_rss_news():
+    """دریافت اخبار از فیدهای RSS بدون ترجمه زودهنگام برای حفظ سهمیه API"""
     all_news = []
+    headers = {"User-Agent": DEFAULT_USER_AGENT}
+
     for source_name, config in RSS_FEEDS.items():
         try:
-            print("دریافت از: " + source_name + "...")
-            feed = feedparser.parse(config["url"])
+            print(f"دریافت از: {source_name}...")
+            res = requests.get(config["url"], headers=headers, timeout=15)
+            if res.status_code != 200:
+                print(f"خطای HTTP {res.status_code} در دریافت {source_name}")
+                continue
+
+            feed = feedparser.parse(res.content)
             for entry in feed.entries[:20]:
                 title = entry.get("title", "").strip()
                 link = entry.get("link", "").strip()
                 summary_raw = entry.get("summary", entry.get("description", ""))
                 summary = BeautifulSoup(summary_raw, "html.parser").get_text()
                 summary = summary.strip()[:300]
-                
+
                 # فیلتر کردن اخبار نامرتبط
                 if not is_relevant(title, summary):
-                    print("رد شد (نامرتبط): " + title[:50])
                     continue
-                
-                title_fa = translate_to_persian(title)
-                summary_fa = translate_to_persian(summary) if summary else ""
-                
+
                 image_url = ""
-                if hasattr(entry, "media_content"):
+                # بررسی تصاویر موجود در تگ‌های مختلف مدیا
+                if hasattr(entry, "media_content") and entry.media_content:
                     for media in entry.media_content:
-                        if "image" in media.get("type", ""):
-                            image_url = media["url"]
-                            break
-                if not image_url and hasattr(entry, "media_thumbnail"):
+                        if "image" in media.get("type", "") or media.get("medium") == "image":
+                            image_url = media.get("url", "")
+                            if image_url:
+                                break
+                if not image_url and hasattr(entry, "media_thumbnail") and entry.media_thumbnail:
                     for thumb in entry.media_thumbnail:
                         image_url = thumb.get("url", "")
-                        break
-                
+                        if image_url:
+                            break
+                if not image_url and hasattr(entry, "links"):
+                    for lk in entry.links:
+                        if "image" in lk.get("type", ""):
+                            image_url = lk.get("href", "")
+                            if image_url:
+                                break
+
                 if title:
                     all_news.append({
                         "id": make_id(link, title),
-                        "title": title_fa,
-                        "summary": summary_fa,
+                        "title_en": title,
+                        "summary_en": summary,
                         "source": source_name,
                         "emoji": config["emoji"],
                         "category": config["category"],
                         "image": image_url,
                     })
-                time.sleep(0.5)
         except Exception as e:
-            print("خطا در دریافت " + source_name + ": " + str(e))
+            print(f"خطا در دریافت {source_name}: {e}")
     return all_news
 
 
 def fetch_manhwa_updates():
+    """دریافت به‌روزرسانی‌های مانهوا از MangaDex"""
     manhwa_list = []
     try:
         print("دریافت مانهوا از MangaDex...")
@@ -188,46 +228,63 @@ def fetch_manhwa_updates():
                 attrs = manga.get("attributes", {})
                 manga_id = manga.get("id", "")
                 title_data = attrs.get("title", {})
-                title = title_data.get("en") or title_data.get("ko") or title_data.get("ja", "")
+
+                # استخراج عنوان با پشتیبانی از نویسه‌گردانی کره‌ای (ko-ro) و زبان‌های دیگر
+                title = (
+                    title_data.get("en")
+                    or title_data.get("ko-ro")
+                    or title_data.get("ko")
+                    or title_data.get("ja")
+                    or (next(iter(title_data.values())) if title_data else "")
+                )
+
                 cover_filename = ""
                 for rel in manga.get("relationships", []):
                     if rel.get("type") == "cover_art":
                         cover_filename = rel.get("attributes", {}).get("fileName", "")
                         break
+
                 image_url = ""
                 if cover_filename and manga_id:
-                    image_url = "https://uploads.mangadex.org/covers/" + manga_id + "/" + cover_filename + ".256.jpg"
-                description = attrs.get("description", {}).get("en", "")
+                    image_url = f"https://uploads.mangadex.org/covers/{manga_id}/{cover_filename}.256.jpg"
+
+                description_data = attrs.get("description", {})
+                description = description_data.get("en") or (next(iter(description_data.values())) if description_data else "")
                 if description:
-                    description = description[:200]
-                title_fa = translate_to_persian(title) if title else ""
-                summary_fa = translate_to_persian(description) if description else ""
-                time.sleep(0.5)
+                    description = BeautifulSoup(description, "html.parser").get_text().strip()[:200]
+
                 if title:
                     manhwa_list.append({
-                        "id": make_id("https://mangadex.org/title/" + manga_id, title),
-                        "title": title_fa,
-                        "summary": summary_fa,
+                        "id": make_id(f"https://mangadex.org/title/{manga_id}", title),
+                        "title_en": title,
+                        "summary_en": description,
                         "source": "MangaDex",
                         "emoji": "📖",
                         "category": "manhwa",
                         "image": image_url,
                     })
     except Exception as e:
-        print("خطا در دریافت مانهوا: " + str(e))
+        print(f"خطا در دریافت مانهوا: {e}")
     return manhwa_list
 
 
 def format_message(item):
+    """فرمت‌دهی پیام ارسالی با ایمن‌سازی کاراکترهای HTML"""
     emoji = item.get("emoji", "📰")
     category_label = get_category_label(item["category"])
     hashtag = get_hashtag(item["category"])
-    lines = [emoji + " <b>" + item["title"] + "</b>", ""]
-    if item.get("summary"):
-        lines.append(item["summary"])
+
+    # گریز دادن کاراکترهای خاص HTML برای جلوگیری از خطای parse_mode در پیام‌رسان
+    title = html.escape(item.get("title", "").strip())
+    summary = html.escape(item.get("summary", "").strip())
+    source = html.escape(item.get("source", "").strip())
+
+    lines = [f"{emoji} <b>{title}</b>", ""]
+    if summary:
+        lines.append(summary)
         lines.append("")
-    lines.append("📂 " + category_label)
-    lines.append("📌 منبع: " + item["source"])
+    lines.append(f"📂 {category_label}")
+    lines.append(f"📌 منبع: {source}")
     lines.append("")
     lines.append(hashtag)
     lines.append("")
@@ -236,6 +293,7 @@ def format_message(item):
 
 
 def send_text(text):
+    """ارسال پیام متنی به کانال بله"""
     url = BASE_URL + "sendMessage"
     payload = {
         "chat_id": CHANNEL_ID,
@@ -249,14 +307,15 @@ def send_text(text):
         if result.get("ok"):
             return True
         else:
-            print("خطا در ارسال: " + str(result))
+            print(f"خطا در ارسال sendMessage: {result}")
             return False
     except Exception as e:
-        print("خطای شبکه: " + str(e))
+        print(f"خطای شبکه در send_text: {e}")
         return False
 
 
 def send_photo_with_caption(image_url, caption):
+    """ارسال تصویر به همراه کپشن به کانال بله، با fallback به متن ساده در صورت شکست"""
     url = BASE_URL + "sendPhoto"
     payload = {
         "chat_id": CHANNEL_ID,
@@ -270,13 +329,15 @@ def send_photo_with_caption(image_url, caption):
         if result.get("ok"):
             return True
         else:
+            print(f"خطا در sendPhoto: {result} - تلاش مجدد با ارسال متن...")
             return send_text(caption)
     except Exception as e:
-        print("خطا: " + str(e))
+        print(f"خطا در ارسال تصویر: {e} - ارسال متن ساده...")
         return send_text(caption)
 
 
 def post_to_channel(item):
+    """ارسال پست به کانال (تصویردار یا متنی)"""
     text = format_message(item)
     if item.get("image"):
         return send_photo_with_caption(item["image"], text)
@@ -286,34 +347,53 @@ def post_to_channel(item):
 
 def main():
     print("=" * 50)
-    print("شروع اجرا")
+    print("شروع اجرای Anime News Bot")
     print("=" * 50)
+
     if not BOT_TOKEN or not CHANNEL_ID:
-        print("لطفاً متغیرهای BALE_BOT_TOKEN و BALE_CHANNEL_ID را تنظیم کنید!")
+        print("خطا: متغیرهای BALE_BOT_TOKEN و BALE_CHANNEL_ID تنظیم نشده‌اند!")
         return
+
     posted_ids = load_posted_ids()
-    print("تعداد اخبار قبلی: " + str(len(posted_ids)))
+    posted_set = set(posted_ids)
+    print(f"تعداد رکوردهای تاریخچه قبلی: {len(posted_ids)}")
+
     rss_news = fetch_rss_news()
     manhwa_updates = fetch_manhwa_updates()
     all_items = rss_news + manhwa_updates
-    print("مجموع اخبار دریافتی: " + str(len(all_items)))
-    new_items = [item for item in all_items if item["id"] not in posted_ids]
-    print("اخبار جدید: " + str(len(new_items)))
+    print(f"مجموع اخبار و آپدیت‌های دریافت شده: {len(all_items)}")
+
+    # فیلتر کردن آیتم‌های واقعاً جدید
+    new_items = [item for item in all_items if item["id"] not in posted_set]
+    print(f"تعداد اخبار جدید ارسال نشده: {len(new_items)}")
+
     posted_count = 0
+    # فقط به تعداد مجاز در هر اجرا پردازش و ترجمه انجام می‌شود (Lazy Translation)
     for item in new_items[:MAX_POSTS_PER_RUN]:
-        print("ارسال: " + item["title"][:60] + "...")
+        print(f"\nآماده‌سازی و ترجمه: {item['title_en'][:60]}...")
+
+        title_fa = translate_to_persian(item["title_en"])
+        summary_fa = translate_to_persian(item["summary_en"]) if item.get("summary_en") else ""
+        time.sleep(0.5)
+
+        item["title"] = title_fa
+        item["summary"] = summary_fa
+
+        print(f"ارسال به کانال: {item['title'][:60]}...")
         success = post_to_channel(item)
         if success:
-            posted_ids.add(item["id"])
+            posted_ids.append(item["id"])
+            posted_set.add(item["id"])
             posted_count += 1
-            print("ارسال موفق!")
+            print("✓ ارسال موفق!")
             time.sleep(3)
         else:
-            print("ارسال ناموفق!")
+            print("✗ ارسال ناموفق!")
         time.sleep(1)
+
     save_posted_ids(posted_ids)
     print("=" * 50)
-    print("پایان اجرا - " + str(posted_count) + " خبر ارسال شد")
+    print(f"پایان اجرا - {posted_count} خبر با موفقیت ارسال شد.")
     print("=" * 50)
 
 
